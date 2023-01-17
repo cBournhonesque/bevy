@@ -290,6 +290,7 @@ impl MultiThreadedExecutor {
         self.ready_systems_copy = ready_systems;
     }
 
+    /// Checks if a system can run by looking at access conflicts
     fn can_run(
         &mut self,
         system_index: usize,
@@ -351,6 +352,7 @@ impl MultiThreadedExecutor {
         true
     }
 
+    /// Checks if a system can run by looking at conditions
     fn should_run(
         &mut self,
         system_index: usize,
@@ -381,6 +383,8 @@ impl MultiThreadedExecutor {
         }
 
         // evaluate system's conditions
+        // Note: we run all conditions for all systems at every update regardless of whether the
+        // system has been skipped because some conditions might have side-effects
         let system_conditions_met =
             evaluate_and_fold_conditions(&mut conditions.system_conditions[system_index], world);
 
