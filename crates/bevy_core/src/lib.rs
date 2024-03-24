@@ -1,5 +1,6 @@
-//! This crate provides core functionality for Bevy Engine.
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
+
+//! This crate provides core functionality for Bevy Engine.
 
 mod name;
 #[cfg(feature = "serialize")]
@@ -19,6 +20,7 @@ pub mod prelude {
 }
 
 use bevy_app::prelude::*;
+use bevy_ecs::change_detection::ChangeTicks;
 use bevy_ecs::prelude::*;
 use std::marker::PhantomData;
 
@@ -32,6 +34,7 @@ pub struct TypeRegistrationPlugin;
 impl Plugin for TypeRegistrationPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Name>();
+        app.register_type::<ChangeTicks<Name>>();
     }
 }
 
