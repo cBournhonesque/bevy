@@ -288,10 +288,10 @@ impl<C: Component + Reflect + FromReflect> FromType<C> for ReflectComponent {
                     .entity_mut(destination_entity)
                     .insert(destination_component);
             },
-            reflect: |entity| entity.get::<C>().map(|c| c as &dyn Reflect),
+            reflect: |entity| entity.get::<C>().map(|c| c.as_reflect()),
             reflect_mut: |entity| {
                 entity.get_mut::<C>().map(|c| Mut {
-                    value: c.value as &mut dyn Reflect,
+                    value: c.value.as_reflect_mut(),
                     ticks: c.ticks,
                 })
             },
@@ -300,7 +300,7 @@ impl<C: Component + Reflect + FromReflect> FromType<C> for ReflectComponent {
                 // `reflect_unchecked_mut` which must be called with an UnsafeEntityCell with access to the component `C` on the `entity`
                 unsafe {
                     entity.get_mut::<C>().map(|c| Mut {
-                        value: c.value as &mut dyn Reflect,
+                        value: c.value.as_reflect_mut(),
                         ticks: c.ticks,
                     })
                 }
