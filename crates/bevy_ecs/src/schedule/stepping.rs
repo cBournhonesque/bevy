@@ -25,7 +25,7 @@ enum Action {
     Waiting,
 
     /// Stepping is enabled; run all systems until the end of the frame, or
-    /// until we encounter a system marked with [`SystemBehavior::Break`] or all
+    /// until we encounter a system marked with [`NodeBehavior::Break`] or all
     /// systems in the frame have run.
     Continue,
 
@@ -34,11 +34,11 @@ enum Action {
 }
 
 #[derive(Debug, Copy, Clone)]
-enum SystemBehavior {
-    /// System will always run regardless of stepping action
+enum NodeBehavior {
+    /// System(s) will always run regardless of stepping action
     AlwaysRun,
 
-    /// System will never run while stepping is enabled
+    /// System(s) will never run while stepping is enabled
     NeverRun,
 
     /// When [`Action::Waiting`] this system will not be run
@@ -63,14 +63,14 @@ struct Cursor {
     pub system: usize,
 }
 
-/// Identifies a node that we want to apply stepping-behavior to
+/// Identifies a node (system or set) that we want to apply stepping-behavior to
 #[derive(Hash, PartialEq, Eq)]
-enum SystemIdentifier {
+enum NodeIdentifier {
     /// A system set
     Set(InternedSystemSet),
     /// A system identified by its type
     Type(TypeId),
-    /// A node in the schedule graph
+    /// A node in the schedule graph (either a system or a set)
     Node(NodeId),
 }
 
@@ -86,9 +86,9 @@ enum Update {
     /// Clear any system-specific behaviors for this schedule
     ClearSchedule(InternedScheduleLabel),
     /// Set a system-specific behavior for this schedule & system
-    SetBehavior(InternedScheduleLabel, SystemIdentifier, SystemBehavior),
+    SetBehavior(InternedScheduleLabel, NodeIdentifier, NodeBehavior),
     /// Clear any system-specific behavior for this schedule & system
-    ClearBehavior(InternedScheduleLabel, SystemIdentifier),
+    ClearBehavior(InternedScheduleLabel, NodeIdentifier),
 }
 
 #[derive(Error, Debug)]
@@ -259,8 +259,8 @@ impl Stepping {
         let type_id = system.system_type_id();
         self.updates.push(Update::SetBehavior(
             schedule.intern(),
-            SystemIdentifier::Type(type_id),
-            SystemBehavior::AlwaysRun,
+            NodeIdentifier::Type(type_id),
+            NodeBehavior::AlwaysRun,
         ));
 
         self
@@ -274,8 +274,8 @@ impl Stepping {
     ) -> &mut Self {
         self.updates.push(Update::SetBehavior(
             schedule.intern(),
-            SystemIdentifier::Set(system_set.into_system_set().intern()),
-            SystemBehavior::AlwaysRun,
+            NodeIdentifier::Set(system_set.into_system_set().intern()),
+            NodeBehavior::AlwaysRun,
         ));
 
         self
@@ -285,8 +285,8 @@ impl Stepping {
     pub fn always_run_node(&mut self, schedule: impl ScheduleLabel, node: NodeId) -> &mut Self {
         self.updates.push(Update::SetBehavior(
             schedule.intern(),
-            SystemIdentifier::Node(node),
-            SystemBehavior::AlwaysRun,
+            NodeIdentifier::Node(node),
+            NodeBehavior::AlwaysRun,
         ));
         self
     }
@@ -300,8 +300,8 @@ impl Stepping {
         let type_id = system.system_type_id();
         self.updates.push(Update::SetBehavior(
             schedule.intern(),
-            SystemIdentifier::Type(type_id),
-            SystemBehavior::NeverRun,
+            NodeIdentifier::Type(type_id),
+            NodeBehavior::NeverRun,
         ));
 
         self
@@ -315,8 +315,8 @@ impl Stepping {
     ) -> &mut Self {
         self.updates.push(Update::SetBehavior(
             schedule.intern(),
-            SystemIdentifier::Set(system_set.into_system_set().intern()),
-            SystemBehavior::NeverRun,
+            NodeIdentifier::Set(system_set.into_system_set().intern()),
+            NodeBehavior::NeverRun,
         ));
 
         self
@@ -326,8 +326,8 @@ impl Stepping {
     pub fn never_run_node(&mut self, schedule: impl ScheduleLabel, node: NodeId) -> &mut Self {
         self.updates.push(Update::SetBehavior(
             schedule.intern(),
-            SystemIdentifier::Node(node),
-            SystemBehavior::NeverRun,
+            NodeIdentifier::Node(node),
+            NodeBehavior::NeverRun,
         ));
         self
     }
@@ -341,8 +341,8 @@ impl Stepping {
         let type_id = system.system_type_id();
         self.updates.push(Update::SetBehavior(
             schedule.intern(),
-            SystemIdentifier::Type(type_id),
-            SystemBehavior::Break,
+            NodeIdentifier::Type(type_id),
+            NodeBehavior::Break,
         ));
 
         self
@@ -352,8 +352,8 @@ impl Stepping {
     pub fn set_breakpoint_node(&mut self, schedule: impl ScheduleLabel, node: NodeId) -> &mut Self {
         self.updates.push(Update::SetBehavior(
             schedule.intern(),
-            SystemIdentifier::Node(node),
-            SystemBehavior::Break,
+            NodeIdentifier::Node(node),
+            NodeBehavior::Break,
         ));
         self
     }
@@ -388,7 +388,7 @@ impl Stepping {
         let type_id = system.system_type_id();
         self.updates.push(Update::ClearBehavior(
             schedule.intern(),
-            SystemIdentifier::Type(type_id),
+            NodeIdentifier::Type(type_id),
         ));
 
         self
@@ -402,7 +402,7 @@ impl Stepping {
     ) -> &mut Self {
         self.updates.push(Update::ClearBehavior(
             schedule.intern(),
-            SystemIdentifier::Set(system_set.into_system_set().intern()),
+            NodeIdentifier::Set(system_set.into_system_set().intern()),
         ));
 
         self
@@ -412,7 +412,7 @@ impl Stepping {
     pub fn clear_node(&mut self, schedule: impl ScheduleLabel, node: NodeId) -> &mut Self {
         self.updates.push(Update::ClearBehavior(
             schedule.intern(),
-            SystemIdentifier::Node(node),
+            NodeIdentifier::Node(node),
         ));
         self
     }
@@ -531,9 +531,9 @@ impl Stepping {
                         );
                     }
                 },
-                Update::SetBehavior(label, system, behavior) => {
+                Update::SetBehavior(label, node, behavior) => {
                     match self.schedule_states.get_mut(&label) {
-                        Some(state) => state.set_behavior(system, behavior),
+                        Some(state) => state.set_behavior(node, behavior),
                         None => {
                             warn!(
                                 "stepping is not enabled for schedule {:?}; \
@@ -543,9 +543,9 @@ impl Stepping {
                         }
                     }
                 }
-                Update::ClearBehavior(label, system) => {
+                Update::ClearBehavior(label, node) => {
                     match self.schedule_states.get_mut(&label) {
-                        Some(state) => state.clear_behavior(system),
+                        Some(state) => state.clear_behavior(node),
                         None => {
                             warn!(
                                 "stepping is not enabled for schedule {:?}; \
@@ -651,8 +651,8 @@ impl Stepping {
 
 #[derive(Default)]
 struct ScheduleState {
-    /// per-system [`SystemBehavior`]
-    behaviors: HashMap<NodeId, SystemBehavior>,
+    /// per-system [`NodeBehavior`]
+    behaviors: HashMap<NodeId, NodeBehavior>,
 
     /// order of [`NodeId`]s in the schedule
     ///
@@ -663,7 +663,7 @@ struct ScheduleState {
 
     /// changes to system behavior that should be applied the next time
     /// [`ScheduleState::skipped_systems()`] is called
-    behavior_updates: HashMap<SystemIdentifier, Option<SystemBehavior>>,
+    behavior_updates: HashMap<NodeIdentifier, Option<NodeBehavior>>,
 
     /// This field contains the first steppable system in the schedule.
     first: Option<usize>,
@@ -671,16 +671,16 @@ struct ScheduleState {
 
 impl ScheduleState {
     // set the stepping behavior for a system in this schedule
-    fn set_behavior(&mut self, system: SystemIdentifier, behavior: SystemBehavior) {
+    fn set_behavior(&mut self, node: NodeIdentifier, behavior: NodeBehavior) {
         self.first = None;
-        match system {
-            SystemIdentifier::Set(_) => {
+        match node {
+            NodeIdentifier::Set(_) => {
                 // for sets, we want to apply the behavior to all systems in the set,
                 // which we can only do when we have the `Schedule`, so queue this update
                 // to be processed the next time `skipped_systems()` is called
-                self.behavior_updates.insert(system, Some(behavior));
+                self.behavior_updates.insert(node, Some(behavior));
             }
-            SystemIdentifier::Node(node_id) => {
+            NodeIdentifier::Node(node_id) => {
                 match node_id {
                     NodeId::System(_) => {
                         self.behaviors.insert(node_id, behavior);
@@ -689,30 +689,30 @@ impl ScheduleState {
                         // for sets, we want to apply the behavior to all systems in the set,
                         // which we can only do when we have the `Schedule`, so queue this update
                         // to be processed the next time `skipped_systems()` is called
-                        self.behavior_updates.insert(system, Some(behavior));
+                        self.behavior_updates.insert(node, Some(behavior));
                     }
                 }
             }
             // Behaviors are indexed by NodeId, but we cannot map a system
             // TypeId to a NodeId without the `Schedule`.  So queue this update
             // to be processed the next time `skipped_systems()` is called.
-            SystemIdentifier::Type(_) => {
-                self.behavior_updates.insert(system, Some(behavior));
+            NodeIdentifier::Type(_) => {
+                self.behavior_updates.insert(node, Some(behavior));
             }
         }
     }
 
     // clear the stepping behavior for a system in this schedule
-    fn clear_behavior(&mut self, system: SystemIdentifier) {
+    fn clear_behavior(&mut self, node: NodeIdentifier) {
         self.first = None;
-        match system {
-            SystemIdentifier::Set(_) => {
+        match node {
+            NodeIdentifier::Set(_) => {
                 // for sets, we want to apply the behavior to all systems in the set,
                 // which we can only do when we have the `Schedule`, so queue this update
                 // to be processed the next time `skipped_systems()` is called
-                self.behavior_updates.insert(system, None);
+                self.behavior_updates.insert(node, None);
             }
-            SystemIdentifier::Node(node_id) => {
+            NodeIdentifier::Node(node_id) => {
                 match node_id {
                     NodeId::System(_) => {
                         self.behaviors.remove(&node_id);
@@ -721,13 +721,13 @@ impl ScheduleState {
                         // for sets, we want to apply the behavior to all systems in the set,
                         // which we can only do when we have the `Schedule`, so queue this update
                         // to be processed the next time `skipped_systems()` is called
-                        self.behavior_updates.insert(system, None);
+                        self.behavior_updates.insert(node, None);
                     }
                 }
             }
             // queue TypeId updates to be processed later when we have Schedule
-            SystemIdentifier::Type(_) => {
-                self.behavior_updates.insert(system, None);
+            NodeIdentifier::Type(_) => {
+                self.behavior_updates.insert(node, None);
             }
         }
     }
@@ -747,10 +747,10 @@ impl ScheduleState {
             // get the system_set behaviour by node or type_id
             if let Some(behavior) = self
                 .behavior_updates
-                .get(&SystemIdentifier::Node(node_id))
+                .get(&NodeIdentifier::Node(node_id))
                 .or_else(|| {
                     self.behavior_updates
-                        .get(&SystemIdentifier::Set(set.intern()))
+                        .get(&NodeIdentifier::Set(set.intern()))
                 })
             {
                 let systems_in_set = schedule.graph().sets_to_systems.get(&node_id).unwrap();
@@ -772,7 +772,7 @@ impl ScheduleState {
         for (node_id, system) in schedule.systems().unwrap() {
             let behavior = self
                 .behavior_updates
-                .get(&SystemIdentifier::Type(system.type_id()));
+                .get(&NodeIdentifier::Type(system.type_id()));
             match behavior {
                 None => continue,
                 Some(None) => {
@@ -816,7 +816,7 @@ impl ScheduleState {
         if self.first.is_none() {
             for (i, (node_id, _)) in schedule.systems().unwrap().enumerate() {
                 match self.behaviors.get(&node_id) {
-                    Some(SystemBehavior::AlwaysRun | SystemBehavior::NeverRun) => continue,
+                    Some(NodeBehavior::AlwaysRun | NodeBehavior::NeverRun) => continue,
                     Some(_) | None => {
                         self.first = Some(i);
                         break;
@@ -832,7 +832,7 @@ impl ScheduleState {
             let behavior = self
                 .behaviors
                 .get(&node_id)
-                .unwrap_or(&SystemBehavior::Continue);
+                .unwrap_or(&NodeBehavior::Continue);
 
             #[cfg(test)]
             debug!(
@@ -849,7 +849,7 @@ impl ScheduleState {
                 // is marked as NeverRun, add it to the skip list.
                 // Also, advance the cursor past this system if it is our
                 // current position
-                (_, SystemBehavior::NeverRun) => {
+                (_, NodeBehavior::NeverRun) => {
                     skip.insert(i);
                     if i == pos {
                         pos += 1;
@@ -859,7 +859,7 @@ impl ScheduleState {
                 // never be added to the skip list
                 // Also, advance the cursor past this system if it is our
                 // current position
-                (_, SystemBehavior::AlwaysRun) => {
+                (_, NodeBehavior::AlwaysRun) => {
                     if i == pos {
                         pos += 1;
                     }
@@ -884,7 +884,7 @@ impl ScheduleState {
                 // If we're continuing, and the step behavior is continue, we
                 // want to skip any systems prior to our start position.  That's
                 // where the stepping frame left off last time we ran anything.
-                (Action::Continue, SystemBehavior::Continue) => {
+                (Action::Continue, NodeBehavior::Continue) => {
                     if i < start {
                         skip.insert(i);
                     }
@@ -897,7 +897,7 @@ impl ScheduleState {
                 // it anyway.  This allows the user to continue, hit a
                 // breakpoint, then continue again to run the breakpoint system
                 // and any following systems.
-                (Action::Continue, SystemBehavior::Break) => {
+                (Action::Continue, NodeBehavior::Break) => {
                     if i != start {
                         skip.insert(i);
 
@@ -1148,6 +1148,20 @@ mod tests {
         stepping
             .add_schedule(TestSchedule)
             .enable()
+            .always_run_set(TestSchedule, TestSets::Charlie);
+
+        assert_schedule_runs!(&schedule, &mut stepping, first_system, second_system);
+    }
+
+    #[test]
+    fn waiting_always_run_set_override() {
+        let (schedule, _world) = setup();
+
+        let mut stepping = Stepping::new();
+        stepping
+            .add_schedule(TestSchedule)
+            .enable()
+            .never_run_set(TestSchedule, TestSets::Bravo)
             .always_run_set(TestSchedule, TestSets::Charlie);
 
         assert_schedule_runs!(&schedule, &mut stepping, first_system, second_system);
