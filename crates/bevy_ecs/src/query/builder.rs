@@ -6,6 +6,18 @@ use crate::{
 };
 
 use super::{FilteredAccess, QueryData, QueryFilter};
+#[cfg(feature = "dynamic_query")]
+use super::dynamic_plan::*;
+#[cfg(feature = "dynamic_query")]
+use alloc::vec::Vec;
+#[cfg(feature = "dynamic_query")]
+use smallvec::SmallVec;
+#[cfg(feature = "dynamic_query")]
+use crate::component::ComponentId;
+#[cfg(feature = "dynamic_query")]
+use crate::world::FilteredEntityRef;
+#[cfg(feature = "dynamic_query")]
+use crate::query::state::QueryState;
 
 /// Builder struct to create [`QueryState`] instances at runtime.
 ///
@@ -41,6 +53,8 @@ pub struct QueryBuilder<'w, D: QueryData = (), F: QueryFilter = ()> {
     or: bool,
     first: bool,
     _marker: PhantomData<(D, F)>,
+    #[cfg(feature = "dynamic_query")]
+    plan: DynamicPlan,
 }
 
 impl<'w, D: QueryData, F: QueryFilter> QueryBuilder<'w, D, F> {
@@ -68,6 +82,8 @@ impl<'w, D: QueryData, F: QueryFilter> QueryBuilder<'w, D, F> {
             or: false,
             first: false,
             _marker: PhantomData,
+            #[cfg(feature = "dynamic_query")]
+            plan: DynamicPlan::new(),
         }
     }
 
@@ -268,6 +284,74 @@ impl<'w, D: QueryData, F: QueryFilter> QueryBuilder<'w, D, F> {
     /// state for the new [`QueryState`]
     pub fn build(&mut self) -> QueryState<D, F> {
         QueryState::<D, F>::from_builder(self)
+    }
+
+    // ===== Dynamic extensions (behind feature) =====
+    #[cfg(feature = "dynamic_query")]
+    /// Create a new variable/term and return its id.
+    pub fn var(&mut self) -> VarId { self.plan.var() }
+
+    #[cfg(feature = "dynamic_query")]
+    /// Constrain that `var` has component `id` (read).
+    pub fn with_id_var(&mut self, id: ComponentId, var: TermVar) -> &mut Self {
+        // Update global filtered access like a normal With + read
+        let mut access = FilteredAccess::default();
+        access.and_with(id);
+        access.add_component_read(id);
+        self.extend_access(access);
+        // Record constraint
+        self.plan.constraints.push(Constraint::With { var, component: id, write: false });
+        self
+    }
+
+    #[cfg(feature = "dynamic_query")]
+    /// Constrain that `var` has component `id` (write).
+    pub fn mut_id_var(&mut self, id: ComponentId, var: TermVar) -> &mut Self {
+        let mut access = FilteredAccess::default();
+        access.and_with(id);
+        access.add_component_write(id);
+        self.extend_access(access);
+        self.plan.constraints.push(Constraint::With { var, component: id, write: true });
+        self
+    }
+
+    #[cfg(feature = "dynamic_query")]
+    /// Constrain that `var` does not have component `id`.
+    pub fn without_id_var(&mut self, id: ComponentId, var: TermVar) -> &mut Self {
+        let mut access = FilteredAccess::default();
+        access.and_without(id);
+        self.extend_access(access);
+        self.plan.constraints.push(Constraint::Without { var, component: id });
+        self
+    }
+
+    #[cfg(feature = "dynamic_query")]
+    /// Constrain a relation between two variables.
+    pub fn relation_id(&mut self, rel: ComponentId, from: TermVar, to: TermVar) -> &mut Self {
+        // Relations may be stored sparsely; for now mark via a With on the `from` side so archetype pruning can work when possible.
+        let mut access = FilteredAccess::default();
+        access.and_with(rel);
+        self.extend_access(access);
+        self.plan.constraints.push(Constraint::Relation { rel, from, to });
+        self
+    }
+
+    #[cfg(feature = "dynamic_query")]
+    /// Build a dynamic query that matches using the accumulated plan.
+    pub fn build_dynamic(&mut self) -> QueryState<crate::query::DynamicData> {
+        use crate::query::{DynamicData, DynamicState, QueryState};
+        let world = self.world();
+        // pessimistic dense
+        let is_dense = false;
+        let fetch_state = DynamicState { plan: self.plan.clone() };
+        let filter_state = (); // no filter
+        QueryState::<DynamicData>::from_states_uninitialized_with_access(
+            world,
+            fetch_state,
+            filter_state,
+            self.access.clone(),
+            is_dense,
+        )
     }
 }
 
