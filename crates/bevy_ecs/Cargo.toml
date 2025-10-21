@@ -12,6 +12,11 @@ rust-version = "1.86.0"
 
 [features]
 default = ["std", "bevy_reflect", "async_executor", "backtrace"]
+# Testing/internal toggles
+query_uncached_default = []
+
+# Experimental dynamic query support (builder and plan types)
+dynamic_query = []
 
 # Functionality
 
