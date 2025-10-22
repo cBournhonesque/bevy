@@ -348,6 +348,24 @@ unsafe impl WorldQuery for Dynamic {
     }
 }
 
+// 1. Don't support non-archetypal QueryData/QueryFilter for now
+// 2. Implement this separately as Query<Dynamic>::iter_dynamic() ?
+// 3. Don't do caching
+
+
+// QueryPlan has Vec<FilteredAccess> + Relationship info
+// To match it maintains:
+// - current table/archetype per source
+// -
+
+// - each variable is set to a current archetype/table + index within it
+// - each variable tracks if we've already written to it or not
+// - source 0 checks if <D, F> matches the current archetype/table (simply by checking the access)
+// - if it does, it fetches the source 2 (via relation) and then checks if that one is valid (if written has been set, it's easy. Else,
+//   -> go through every archetype that 2 matches (via uncached query logic)
+
+// implementation for the next() using the
+
 // SAFETY: Dynamic only provides read-only access via FilteredEntityRef
 unsafe impl QueryData for Dynamic {
     const IS_READ_ONLY: bool = true;

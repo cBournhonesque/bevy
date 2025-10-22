@@ -2519,6 +2519,10 @@ impl<'w, 's, D: QueryData, F: QueryFilter> QueryIterationCursor<'w, 's, D, F> {
         remaining_matched + self.current_len - self.current_row
     }
 
+    // MultiSourceQueryIterationCursor
+    // implemented for MultiSourceQueryIterationCursor<D>
+    // implemented for 
+
     // NOTE: If you are changing query iteration code, remember to update the following places, where relevant:
     // QueryIter, QueryIterationCursor, QuerySortedIter, QueryManyIter, QuerySortedManyIter, QueryCombinationIter,
     // QueryState::par_fold_init_unchecked_manual, QueryState::par_many_fold_init_unchecked_manual,

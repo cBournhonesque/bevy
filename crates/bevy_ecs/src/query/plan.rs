@@ -5,45 +5,262 @@ use crate::{
     world::unsafe_world_cell::UnsafeWorldCell,
 };
 use alloc::vec::Vec;
+use std::marker::PhantomData;
+use fixedbitset::FixedBitSet;
+use bevy_ecs::component::{Component, StorageType};
+use bevy_ecs::prelude::{Query, QueryState, With, Without, World};
+use bevy_ecs::query::{QueryData, QueryFilter};
 use bevy_ptr::Ptr;
 
-/// This enum describes a way to access the entities of Relationship and RelationshipTarget components
-/// in a type-erased context.
-#[derive(Debug, Clone, Copy)]
-pub enum RelationshipAccessor {
-    /// This component is a Relationship.
-    Relationship {
-        /// Offset of the field containing Entity from the base of the component.
-        entity_field_offset: usize,
-        /// Value of RelationshipTarget::LINKED_SPAWN for the RelationshipTarget of this Relationship.
-        linked_spawn: bool,
-    },
-    /// This component is a RelationshipTarget.
-    RelationshipTarget {
-        /// Function that returns an iterator over all Entitys of this RelationshipTarget's collection.
-        ///
-        /// # Safety
-        /// Passed pointer must point to the value of the same component as the one that this accessor was registered to.
-        iter: for<'a> unsafe fn(Ptr<'a>) -> alloc::boxed::Box<dyn Iterator<Item = Entity> + 'a>,
-        /// Value of RelationshipTarget::LINKED_SPAWN of this RelationshipTarget.
-        linked_spawn: bool,
-    },
+
+pub struct QueryBuilder {
+    access: FilteredAccess,
+    or: bool,
+    first: bool,
 }
 
-/// Represents a single term/source in a multi-source query.
+impl QueryBuilder {
+    /// Creates a new builder with the accesses required for `Q` and `F`
+    pub fn new(world: &'w mut World) -> Self {
+        let fetch_state = D::init_state(world);
+        let filter_state = F::init_state(world);
+
+        let mut access = FilteredAccess::default();
+        D::update_component_access(&fetch_state, &mut access);
+
+        // Use a temporary empty FilteredAccess for filters. This prevents them from conflicting with the
+        // main Query's `fetch_state` access. Filters are allowed to conflict with the main query fetch
+        // because they are evaluated *before* a specific reference is constructed.
+        let mut filter_access = FilteredAccess::default();
+        F::update_component_access(&filter_state, &mut filter_access);
+
+        // Merge the temporary filter access with the main access. This ensures that filter access is
+        // properly considered in a global "cross-query" context (both within systems and across systems).
+        access.extend(&filter_access);
+
+        Self {
+            access,
+            world,
+            or: false,
+            first: false,
+            _marker: PhantomData,
+        }
+    }
+
+    pub(super) fn is_dense(&self) -> bool {
+        // Note: `component_id` comes from the user in safe code, so we cannot trust it to
+        // exist. If it doesn't exist we pessimistically assume it's sparse.
+        let is_dense = |component_id| {
+            self.world()
+                .components()
+                .get_info(component_id)
+                .is_some_and(|info| info.storage_type() == StorageType::Table)
+        };
+
+        let Ok(component_accesses) = self.access.access().try_iter_component_access() else {
+            // Access is unbounded, pessimistically assume it's sparse.
+            return false;
+        };
+
+        component_accesses
+            .map(|access| *access.index())
+            .all(is_dense)
+            && !self.access.access().has_read_all_components()
+            && self.access.with_filters().all(is_dense)
+            && self.access.without_filters().all(is_dense)
+    }
+
+    /// Returns a reference to the world passed to [`Self::new`].
+    pub fn world(&self) -> &World {
+        self.world
+    }
+
+    /// Returns a mutable reference to the world passed to [`Self::new`].
+    pub fn world_mut(&mut self) -> &mut World {
+        self.world
+    }
+
+    /// Adds access to self's underlying [`FilteredAccess`] respecting [`Self::or`] and [`Self::and`]
+    pub fn extend_access(&mut self, mut access: FilteredAccess) {
+        if self.or {
+            if self.first {
+                access.required.clear();
+                self.access.extend(&access);
+                self.first = false;
+            } else {
+                self.access.append_or(&access);
+            }
+        } else {
+            self.access.extend(&access);
+        }
+    }
+
+    /// Adds accesses required for `T` to self.
+    pub fn data<T: QueryData>(&mut self) -> &mut Self {
+        let state = T::init_state(self.world);
+        let mut access = FilteredAccess::default();
+        T::update_component_access(&state, &mut access);
+        self.extend_access(access);
+        self
+    }
+
+    /// Adds filter from `T` to self.
+    pub fn filter<T: QueryFilter>(&mut self) -> &mut Self {
+        let state = T::init_state(self.world);
+        let mut access = FilteredAccess::default();
+        T::update_component_access(&state, &mut access);
+        self.extend_access(access);
+        self
+    }
+
+    /// Adds [`With<T>`] to the [`FilteredAccess`] of self.
+    pub fn with<T: Component>(&mut self) -> &mut Self {
+        self.filter::<With<T>>();
+        self
+    }
+
+    /// Adds [`With<T>`] to the [`FilteredAccess`] of self from a runtime [`ComponentId`].
+    pub fn with_id(&mut self, id: ComponentId) -> &mut Self {
+        let mut access = FilteredAccess::default();
+        access.and_with(id);
+        self.extend_access(access);
+        self
+    }
+
+    /// Adds [`Without<T>`] to the [`FilteredAccess`] of self.
+    pub fn without<T: Component>(&mut self) -> &mut Self {
+        self.filter::<Without<T>>();
+        self
+    }
+
+    /// Adds [`Without<T>`] to the [`FilteredAccess`] of self from a runtime [`ComponentId`].
+    pub fn without_id(&mut self, id: ComponentId) -> &mut Self {
+        let mut access = FilteredAccess::default();
+        access.and_without(id);
+        self.extend_access(access);
+        self
+    }
+
+    /// Adds `&T` to the [`FilteredAccess`] of self.
+    pub fn ref_id(&mut self, id: ComponentId) -> &mut Self {
+        self.with_id(id);
+        self.access.add_component_read(id);
+        self
+    }
+
+    /// Adds `&mut T` to the [`FilteredAccess`] of self.
+    pub fn mut_id(&mut self, id: ComponentId) -> &mut Self {
+        self.with_id(id);
+        self.access.add_component_write(id);
+        self
+    }
+
+    /// Takes a function over mutable access to a [`bevy_ecs::prelude::QueryBuilder`], calls that function
+    /// on an empty builder and then adds all accesses from that builder to self as optional.
+    pub fn optional(&mut self, f: impl Fn(&mut bevy_ecs::prelude::QueryBuilder)) -> &mut Self {
+        let mut builder = bevy_ecs::prelude::QueryBuilder::new(self.world);
+        f(&mut builder);
+        self.access.extend_access(builder.access());
+        self
+    }
+
+    /// Takes a function over mutable access to a [`bevy_ecs::prelude::QueryBuilder`], calls that function
+    /// on an empty builder and then adds all accesses from that builder to self.
+    ///
+    /// Primarily used when inside a [`Self::or`] closure to group several terms.
+    pub fn and(&mut self, f: impl Fn(&mut bevy_ecs::prelude::QueryBuilder)) -> &mut Self {
+        let mut builder = bevy_ecs::prelude::QueryBuilder::new(self.world);
+        f(&mut builder);
+        let access = builder.access().clone();
+        self.extend_access(access);
+        self
+    }
+
+    /// Takes a function over mutable access to a [`bevy_ecs::prelude::QueryBuilder`], calls that function
+    /// on an empty builder, all accesses added to that builder will become terms in an or expression.
+    ///
+    /// ```
+    /// # use bevy_ecs::prelude::*;
+    /// #
+    /// # #[derive(Component)]
+    /// # struct A;
+    /// #
+    /// # #[derive(Component)]
+    /// # struct B;
+    /// #
+    /// # let mut world = World::new();
+    /// #
+    /// QueryBuilder::<Entity>::new(&mut world).or(|builder| {
+    ///     builder.with::<A>();
+    ///     builder.with::<B>();
+    /// });
+    /// // is equivalent to
+    /// QueryBuilder::<Entity>::new(&mut world).filter::<Or<(With<A>, With<B>)>>();
+    /// ```
+    pub fn or(&mut self, f: impl Fn(&mut bevy_ecs::prelude::QueryBuilder)) -> &mut Self {
+        let mut builder = bevy_ecs::prelude::QueryBuilder::new(self.world);
+        builder.or = true;
+        builder.first = true;
+        f(&mut builder);
+        self.access.extend(builder.access());
+        self
+    }
+
+    /// Returns a reference to the [`FilteredAccess`] that will be provided to the built [`Query`].
+    pub fn access(&self) -> &FilteredAccess {
+        &self.access
+    }
+
+    /// Transmute the existing builder adding required accesses.
+    /// This will maintain all existing accesses.
+    ///
+    /// If including a filter type see [`Self::transmute_filtered`]
+    pub fn transmute<NewD: QueryData>(&mut self) -> &mut bevy_ecs::prelude::QueryBuilder<'w, NewD> {
+        self.transmute_filtered::<NewD, ()>()
+    }
+
+    /// Transmute the existing builder adding required accesses.
+    /// This will maintain all existing accesses.
+    pub fn transmute_filtered<NewD: QueryData, NewF: QueryFilter>(
+        &mut self,
+    ) -> &mut bevy_ecs::prelude::QueryBuilder<'w, NewD, NewF> {
+        let fetch_state = NewD::init_state(self.world);
+        let filter_state = NewF::init_state(self.world);
+
+        let mut access = FilteredAccess::default();
+        NewD::update_component_access(&fetch_state, &mut access);
+        NewF::update_component_access(&filter_state, &mut access);
+
+        self.extend_access(access);
+        // SAFETY:
+        // - We have included all required accesses for NewQ and NewF
+        // - The layout of all QueryBuilder instances is the same
+        unsafe { core::mem::transmute(self) }
+    }
+
+    /// Create a [`QueryState`] with the accesses of the builder.
+    ///
+    /// Takes `&mut self` to access the inner world reference while initializing
+    /// state for the new [`QueryState`]
+    pub fn build(&mut self) -> QueryState<D, F> {
+        QueryState::<D, F>::from_builder(self)
+    }
+}
+
+/// Represents a single source in a multi-source query.
 /// Each term has its own ComponentAccess requirements.
 #[derive(Debug, Clone)]
-pub struct QueryTerm {
+pub struct QueryElement {
     /// The components that need to be accessed for this term.
     pub access: FilteredAccess,
     /// Index of this term in the query plan.
     pub term_index: usize,
 }
 
-impl QueryTerm {
+impl QueryElement {
     /// Create a new query term with the given access.
     pub fn new(term_index: usize, access: FilteredAccess) -> Self {
-        Self { access, term_index }
+        Self { access, term_index, relationships }
     }
 
     /// Check if an entity matches this term's requirements.
@@ -89,8 +306,6 @@ pub struct QueryRelationship {
     pub target_term: usize,
     /// The relationship component that links source to target.
     pub relationship_component: ComponentId,
-    /// How to access the relationship data.
-    pub accessor: RelationshipAccessor,
 }
 
 impl QueryRelationship {
@@ -147,21 +362,115 @@ impl QueryRelationship {
     }
 }
 
+pub struct QueryVariable {
+    index: u8,
+}
+
+impl From<u8> for QueryVariable {
+    fn from(value: u8) -> Self {
+        Self {
+            index: value
+        }
+    }
+}
+
+pub struct QueryPlanBuilder<'w, 'p> {
+    world: &'w mut World,
+    plan: QueryPlan,
+}
+
+impl<'w, 'p> QueryPlanBuilder {
+    pub fn new(world: &'w mut World) -> Self {
+        Self {
+            world,
+            plan: QueryPlan::default(),
+        }
+    }
+
+    pub fn add_source<D: QueryData, F: QueryFilter>(&mut self) -> &mut Self {
+        let fetch_state = D::init_state(&mut self.world);
+        let filter_state = F::init_state(&mut self.world);
+
+        let mut access = FilteredAccess::default();
+        D::update_component_access(&fetch_state, &mut access);
+
+        // Use a temporary empty FilteredAccess for filters. This prevents them from conflicting with the
+        // main Query's `fetch_state` access. Filters are allowed to conflict with the main query fetch
+        // because they are evaluated *before* a specific reference is constructed.
+        let mut filter_access = FilteredAccess::default();
+        F::update_component_access(&filter_state, &mut filter_access);
+
+        // Merge the temporary filter access with the main access. This ensures that filter access is
+        // properly considered in a global "cross-query" context (both within systems and across systems).
+        access.extend(&filter_access);
+
+        self.plan.add_term(access);
+        &mut self
+    }
+
+    pub fn build(self) -> QueryPlan {
+        self.plan
+    }
+}
+
+#[derive(thiserror::Error)]
+pub enum QueryPlanError {
+    /// The source does not exist
+    #[error("The source with index {0} does not exist")]
+    QuerySourceNotFound(u8),
+}
+
 /// A dynamic query plan that describes how to match multiple entities
 /// connected through relationships.
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct QueryPlan {
-    /// All terms in this query.
-    pub terms: Vec<QueryTerm>,
+    /// All variables in this query.
+    pub terms: Vec<QueryElement>,
     /// Relationships that connect the terms.
     pub relationships: Vec<QueryRelationship>,
     /// The index of the main term (the one we iterate over).
-    pub main_term_index: usize,
+    pub main_term_index: u8,
 }
+// TODO: compile step: find a list of ops
+
+
+// TODO: what of R1(1, 2) and R2(1, 3) ?
+//  make ops Query<D, F>(1) and R(1, 2) and R(1, 3)
+//  an op is either a query or a R, and both are ordered together.
+
+// next()
+// 1. (D, F, 0): use component index and find a list of matching archetypes/tables. Set variable_state to the first row of the first table.
+// 2. (R1, 0, 1): get the entity value of 1 via the relationship, set it to written
+// 3. (D2, F2, 1): 'written=True' -> check if 1 matches D2, F2
+//   If true, keep going to next operation
+//   If false, redo the previous operation (but knowing that the next match is false). For example for a FixedMatch, redo means 'False' -> we dont match
+//    For a variablematch, redo means go to next row
+// 4. (R2, 0, 2): get the entity value of 2 via the relationship
+
+
+pub struct IterState {
+    // index of the source we are currently considering
+    pub curr_source: u8,
+    // Current index, index + offset = row in table
+    pub index: u32,
+    // Offset into table
+    pub offset: u32,
+    // Total entities to iterate in current table
+    pub count: u32,
+
+    /// Index of the current entity for each variable
+    pub variable_state: Vec<VariableState>,
+    /// List of matching tables/archetypes to iterate through for each variable
+    pub operation_state: Vec<StorageState>,
+
+    /// Whether we have already found an Entity for the source after processing operation i
+    written: Vec<FixedBitSet>,
+}
+
 
 impl QueryPlan {
     /// Create a new empty query plan.
-    pub fn new(main_term_index: usize) -> Self {
+    pub fn new(main_term_index: u8) -> Self {
         Self {
             terms: Vec::new(),
             relationships: Vec::new(),
@@ -170,26 +479,28 @@ impl QueryPlan {
     }
 
     /// Add a term to the query plan.
-    pub fn add_term(&mut self, access: FilteredAccess) -> usize {
+    pub(crate) fn add_term(&mut self, access: FilteredAccess) -> usize {
         let term_index = self.terms.len();
-        self.terms.push(QueryTerm::new(term_index, access));
+        self.terms.push(QueryElement::new(term_index, access));
         term_index
     }
 
     /// Add a relationship between two terms.
     pub fn add_relationship(
         &mut self,
-        source_term: usize,
-        target_term: usize,
+        source: impl Into<QueryVariable>,
+        target: impl Into<QueryVariable>,
         relationship_component: ComponentId,
-        accessor: RelationshipAccessor,
-    ) {
-        self.relationships.push(QueryRelationship {
-            source_term,
-            target_term,
+    ) -> Result<&mut Self, QueryPlanError> {
+        let source = source.into();
+        let target = target.into();
+        let term = self.terms.get_mut(source.index).ok_or(QueryPlanError::QuerySourceNotFound(source.index))?;
+        term.relationships.push(QueryRelationship {
+            source_term: source.index,
+            target_term: target.index,
             relationship_component,
-            accessor,
         });
+        Ok(self)
     }
 
     /// Get the access for the main term (used for archetype matching).
@@ -287,94 +598,7 @@ impl QueryPlan {
     }
 }
 
-/// A builder for constructing a [`QueryPlan`].
-///
-/// # Example
-/// ```
-/// # use bevy_ecs::prelude::*;
-/// # use bevy_ecs::query::{QueryPlanBuilder, RelationshipAccessor, FilteredAccess};
-/// # use bevy_ecs::component::ComponentId;
-/// # let mut world = World::new();
-/// # let spaceship_id = world.register_component::<()>();
-/// # let faction_id = world.register_component::<()>();
-/// # let planet_id = world.register_component::<()>();
-/// let mut builder = QueryPlanBuilder::new();
-///
-/// // Term 0: Spaceship (main source)
-/// let mut access0 = FilteredAccess::matches_everything();
-/// access0.add_component_read(spaceship_id);
-/// let term0 = builder.add_term(access0);
-///
-/// // Term 1: Faction
-/// let mut access1 = FilteredAccess::matches_everything();
-/// let term1 = builder.add_term(access1);
-///
-/// // Relationship: Faction from Spaceship to Faction entity
-/// builder.add_relationship(
-///     term0,
-///     term1,
-///     faction_id,
-///     RelationshipAccessor::Relationship {
-///         entity_field_offset: 0,
-///         linked_spawn: false,
-///     },
-/// );
-///
-/// let plan = builder.build(term0);
-/// ```
-pub struct QueryPlanBuilder {
-    terms: Vec<QueryTerm>,
-    relationships: Vec<QueryRelationship>,
-}
 
-impl QueryPlanBuilder {
-    /// Create a new empty builder.
-    pub fn new() -> Self {
-        Self {
-            terms: Vec::new(),
-            relationships: Vec::new(),
-        }
-    }
-
-    /// Add a term to the query plan.
-    /// Returns the term index which can be used in relationships.
-    pub fn add_term(&mut self, access: FilteredAccess) -> usize {
-        let term_index = self.terms.len();
-        self.terms.push(QueryTerm::new(term_index, access));
-        term_index
-    }
-
-    /// Add a relationship between two terms.
-    pub fn add_relationship(
-        &mut self,
-        source_term: usize,
-        target_term: usize,
-        relationship_component: ComponentId,
-        accessor: RelationshipAccessor,
-    ) {
-        self.relationships.push(QueryRelationship {
-            source_term,
-            target_term,
-            relationship_component,
-            accessor,
-        });
-    }
-
-    /// Build the final query plan with the specified main term.
-    pub fn build(self, main_term_index: usize) -> QueryPlan {
-        QueryPlan {
-            terms: self.terms,
-            relationships: self.relationships,
-            main_term_index,
-        }
-    }
-}
-
-impl Default for QueryPlanBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// A typed builder for constructing query plans with compile-time component type information.
 ///
