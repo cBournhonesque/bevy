@@ -501,10 +501,11 @@ impl World {
     /// Runs a cached system, registering it if necessary.
     ///
     /// See [`World::register_system_cached`] for more information.
-    pub fn run_system_cached<O: 'static, M, S: IntoSystem<(), O, M> + 'static>(
+    pub fn run_system_cached<I, O: 'static, M, S: IntoSystem<I, O, M> + 'static>(
         &mut self,
         system: S,
-    ) -> Result<O, RegisteredSystemError<(), O>> {
+    ) -> Result<O, RegisteredSystemError<I, O>>
+    where  I: SystemInput<Inner<'static> = ()> + 'static {
         self.run_system_cached_with(system, ())
     }
 

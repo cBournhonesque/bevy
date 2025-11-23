@@ -294,7 +294,7 @@ all_tuples!(
 #[cfg(test)]
 mod tests {
     use crate::{
-        system::{In, InMut, InRef, IntoSystem, System},
+        system::{In, InMut, InRef, IntoSystem, StaticSystemInput, System, SystemInput},
         world::World,
     };
 
@@ -326,5 +326,14 @@ mod tests {
         assert_eq!(by_ref.run((&a, &b), &mut world).unwrap(), 36);
         by_mut.run((&mut a, b), &mut world).unwrap();
         assert_eq!(a, 36);
+    }
+
+    #[test]
+    fn static_system_input_usable_as_underlying_input() {
+        fn generic_system<I: SystemInput>(_: StaticSystemInput<I>) {}
+
+        // `run_system_cached` and `add_systems` require `In = ()`, not `In = StaticSystemInput<()>`
+        let mut world = World::new();
+        world.run_system_cached(generic_system::<()>).unwrap();
     }
 }
