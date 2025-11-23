@@ -144,10 +144,11 @@ where
 
 /// A [`Command`] that runs the given system,
 /// caching its [`SystemId`] in a [`CachedSystemId`](crate::system::CachedSystemId) resource.
-pub fn run_system_cached<M, S>(system: S) -> impl Command<Result>
+pub fn run_system_cached<I, M, S>(system: S) -> impl Command<Result>
 where
+    I: SystemInput<Inner<'static> = ()> + 'static,
     M: 'static,
-    S: IntoSystem<(), (), M> + Send + 'static,
+    S: IntoSystem<I, (), M> + Send + 'static,
 {
     move |world: &mut World| -> Result {
         world.run_system_cached(system)?;
