@@ -21,6 +21,7 @@ use crate::{
     storage::{ComponentSparseSet, Storages, Table},
     world::RawCommandQueue,
 };
+use bevy_ecs::world::EntityMut;
 use bevy_platform::sync::atomic::Ordering;
 use bevy_ptr::Ptr;
 use core::{any::TypeId, cell::UnsafeCell, fmt::Debug, marker::PhantomData, ptr};
@@ -971,6 +972,21 @@ impl<'w> UnsafeEntityCell<'w> {
                 ticks: ComponentTicksMut::from_tick_cells(cells, last_change_tick, change_tick),
             })
         }
+    }
+
+    /// # Safety
+    /// It is the caller's responsibility to ensure that
+    /// - No accesses to any of the entity's components may exist
+    ///   at the same time as the returned [`EntityMut`].
+    /// - the resulting [`EntityMut`] is only used to access components
+    ///   that `self` has permission to access
+    #[inline]
+    pub unsafe fn entity_mut(self) -> EntityMut<'w> {
+        // SAFETY:
+        // - the EntityMut won't be used to alias the entity's references
+        // - the EntityMut will only access components that the cell has permission
+        //   to access
+        unsafe { EntityMut::new(self) }
     }
 
     /// Returns read-only components for the current entity that match the query `Q`,
