@@ -251,6 +251,34 @@ impl<D: QueryData, F: QueryFilter> QueryState<D, F> {
         }
     }
 
+    #[cfg(feature = "dynamic_query")]
+    /// Creates a new QueryState from explicit states and a precomputed FilteredAccess.
+    pub fn from_states_uninitialized_with_access(
+        world: &World,
+        fetch_state: <D as WorldQuery>::State,
+        filter_state: <F as WorldQuery>::State,
+        component_access: FilteredAccess,
+        is_dense: bool,
+    ) -> Self {
+        Self {
+            world_id: world.id(),
+            archetype_generation: ArchetypeGeneration::initial(),
+            matched_storage_ids: Vec::new(),
+            is_dense,
+            fetch_state,
+            filter_state,
+            component_access,
+            matched_tables: Default::default(),
+            matched_archetypes: Default::default(),
+            #[cfg(feature = "trace")]
+            par_iter_span: tracing::info_span!(
+                "par_for_each",
+                query = core::any::type_name::<D>(),
+                filter = core::any::type_name::<F>(),
+            ),
+        }
+    }
+
     /// Creates a new [`QueryState`] from a given [`QueryBuilder`] and inherits its [`FilteredAccess`].
     pub fn from_builder(builder: &mut QueryBuilder<D, F>) -> Self {
         let mut fetch_state = D::init_state(builder.world_mut());

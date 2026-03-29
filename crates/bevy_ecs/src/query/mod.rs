@@ -9,6 +9,14 @@ mod iter;
 mod par_iter;
 mod state;
 mod world_query;
+#[cfg(feature = "dynamic_query")]
+mod dynamic_plan;
+#[cfg(feature = "dynamic_query")]
+pub use dynamic_plan::*;
+#[cfg(feature = "dynamic_query")]
+mod dynamic;
+#[cfg(feature = "dynamic_query")]
+pub use dynamic::*;
 
 pub use access::*;
 pub use bevy_ecs_macros::{QueryData, QueryFilter};
